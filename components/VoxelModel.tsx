@@ -1,6 +1,6 @@
 
-import React, { useRef, useCallback, useState } from 'react';
-import { Canvas, useThree, ThreeEvent } from '@react-three/fiber';
+import React, { useRef, useCallback, useState, useMemo } from 'react';
+import { Canvas, useThree, ThreeEvent, useFrame } from '@react-three/fiber';
 import { OrbitControls, Grid, Bounds, Edges, GizmoHelper, GizmoViewport } from '@react-three/drei';
 import * as THREE from 'three';
 import { Voxel, ToolType, Vector3 } from '../types';
@@ -13,11 +13,42 @@ interface VoxelModelProps {
   onUpdateVoxelColor: (index: number) => void;
   onPickColor: (index: number) => void;
   onHoverCoord?: (pos: Vector3 | null) => void;
+  hoveredCoord?: Vector3 | null;
   currentTool: ToolType;
   currentColor: string;
   gridSize: number;
   showOutlines: boolean;
 }
+
+const PlacementGhost: React.FC<{ 
+  position: Vector3; 
+  color: string;
+}> = ({ position, color }) => {
+  const meshRef = useRef<THREE.Mesh>(null);
+
+  useFrame((state) => {
+    if (meshRef.current) {
+      // Subtle pulsing animation for the "hologram" feel
+      const s = 1 + Math.sin(state.clock.elapsedTime * 4) * 0.02;
+      meshRef.current.scale.set(s, s, s);
+    }
+  });
+
+  return (
+    <mesh ref={meshRef} position={position}>
+      <boxGeometry args={[1, 1, 1]} />
+      <meshStandardMaterial 
+        color={color} 
+        transparent 
+        opacity={0.4} 
+        depthWrite={false}
+        emissive={color}
+        emissiveIntensity={0.5}
+      />
+      <Edges color="#ffffff" lineWidth={1} />
+    </mesh>
+  );
+};
 
 const VoxelBox: React.FC<{ 
   voxel: Voxel; 
@@ -26,7 +57,7 @@ const VoxelBox: React.FC<{
   isPreview?: boolean;
   currentTool: ToolType;
   onClick?: (e: ThreeEvent<MouseEvent>, index: number) => void; 
-  onHover?: (pos: Vector3 | null) => void;
+  onHover?: (pos: Vector3 | null, placementPos: Vector3 | null) => void;
 }> = ({ voxel, index, showOutlines, isPreview, currentTool, onClick, onHover }) => {
   const [hovered, setHovered] = useState(false);
 
@@ -52,12 +83,34 @@ const VoxelBox: React.FC<{
       onClick={onClick ? (e) => onClick(e, index) : undefined}
       onPointerOver={(e) => { 
         e.stopPropagation(); 
-        setHovered(true); 
-        onHover?.(voxel.position);
+        setHovered(true);
+        const normal = e.face?.normal;
+        if (normal) {
+          const placement: Vector3 = [
+            voxel.position[0] + normal.x,
+            voxel.position[1] + normal.y,
+            voxel.position[2] + normal.z
+          ];
+          onHover?.(voxel.position, placement);
+        } else {
+          onHover?.(voxel.position, null);
+        }
+      }}
+      onPointerMove={(e) => {
+        e.stopPropagation();
+        const normal = e.face?.normal;
+        if (normal) {
+          const placement: Vector3 = [
+            voxel.position[0] + normal.x,
+            voxel.position[1] + normal.y,
+            voxel.position[2] + normal.z
+          ];
+          onHover?.(voxel.position, placement);
+        }
       }}
       onPointerOut={() => {
         setHovered(false);
-        onHover?.(null);
+        onHover?.(null, null);
       }}
     >
       <boxGeometry args={[1, 1, 1]} />
@@ -83,7 +136,7 @@ const VoxelBox: React.FC<{
 
 const InteractiveGrid: React.FC<{ 
   onAdd: (pos: Vector3) => void; 
-  onHover: (pos: Vector3 | null) => void;
+  onHover: (pos: Vector3 | null, placementPos: Vector3 | null) => void;
   gridSize: number 
 }> = ({ onAdd, onHover, gridSize }) => {
   const handleGridClick = (e: ThreeEvent<MouseEvent>) => {
@@ -100,16 +153,16 @@ const InteractiveGrid: React.FC<{
   const handlePointerMove = (e: ThreeEvent<PointerEvent>) => {
     e.stopPropagation();
     const point = e.point;
-    onHover([
+    const pos: Vector3 = [
       Math.floor(point.x + 0.5),
       Math.floor(point.y + 0.5),
       Math.floor(point.z + 0.5)
-    ]);
+    ];
+    onHover(pos, pos);
   };
 
   return (
     <group>
-      {/* Dense Background Infinite Grid */}
       <Grid 
         position={[0, -0.52, 0]} 
         infiniteGrid 
@@ -121,7 +174,6 @@ const InteractiveGrid: React.FC<{
         cellColor="#081108"
       />
       
-      {/* Outer Glow Grid */}
       <Grid 
         position={[0, -0.53, 0]} 
         infiniteGrid 
@@ -133,13 +185,12 @@ const InteractiveGrid: React.FC<{
         cellColor="transparent"
       />
       
-      {/* Main Interaction Plane and Grid */}
       <mesh 
         rotation={[-Math.PI / 2, 0, 0]} 
         position={[0, -0.5, 0]} 
         onClick={handleGridClick}
         onPointerMove={handlePointerMove}
-        onPointerOut={() => onHover(null)}
+        onPointerOut={() => onHover(null, null)}
       >
         <planeGeometry args={[gridSize, gridSize]} />
         <meshBasicMaterial transparent opacity={0} />
@@ -159,8 +210,10 @@ const InteractiveGrid: React.FC<{
 };
 
 const VoxelModel: React.FC<VoxelModelProps> = ({ 
-  voxels, previewVoxels = [], onAddVoxel, onRemoveVoxel, onUpdateVoxelColor, onPickColor, onHoverCoord, currentTool, currentColor, gridSize, showOutlines 
+  voxels, previewVoxels = [], onAddVoxel, onRemoveVoxel, onUpdateVoxelColor, onPickColor, onHoverCoord, hoveredCoord, currentTool, currentColor, gridSize, showOutlines 
 }) => {
+  const [placementPos, setPlacementPos] = useState<Vector3 | null>(null);
+
   const handleVoxelClick = useCallback((e: ThreeEvent<MouseEvent>, index: number) => {
     e.stopPropagation();
     
@@ -194,6 +247,27 @@ const VoxelModel: React.FC<VoxelModelProps> = ({
     }
   }, [voxels, currentTool, onRemoveVoxel, onAddVoxel, onUpdateVoxelColor, onPickColor]);
 
+  const handleHoverUpdate = useCallback((pos: Vector3 | null, placement: Vector3 | null) => {
+    onHoverCoord?.(pos);
+    setPlacementPos(placement);
+  }, [onHoverCoord]);
+
+  // Determine the ghost color based on tool
+  const ghostColor = useMemo(() => {
+    if (currentTool === 'DUPLICATE' && placementPos) {
+      // Find source voxel to match its color
+      const source = voxels.find(v => {
+        // We look for a voxel adjacent to placementPos
+        const dx = Math.abs(v.position[0] - placementPos[0]);
+        const dy = Math.abs(v.position[1] - placementPos[1]);
+        const dz = Math.abs(v.position[2] - placementPos[2]);
+        return (dx + dy + dz) === 1;
+      });
+      return source ? source.color : currentColor;
+    }
+    return currentColor;
+  }, [currentTool, placementPos, voxels, currentColor]);
+
   return (
     <Canvas 
       shadows 
@@ -207,10 +281,6 @@ const VoxelModel: React.FC<VoxelModelProps> = ({
       <directionalLight position={[10, 20, 10]} intensity={0.8} castShadow />
       <spotLight position={[-gridSize, gridSize * 1.5, gridSize]} angle={0.15} penumbra={1} intensity={1} castShadow />
       
-      {/* 
-        Removed 'observe' to prevent jittering when adding/removing voxels.
-        Automatic fitting on every change was fighting with OrbitControls.
-      */}
       <Bounds clip margin={1.2}>
         <group>
           {voxels.map((v, i) => (
@@ -221,7 +291,7 @@ const VoxelModel: React.FC<VoxelModelProps> = ({
               showOutlines={showOutlines}
               currentTool={currentTool}
               onClick={handleVoxelClick}
-              onHover={onHoverCoord}
+              onHover={handleHoverUpdate}
             />
           ))}
           {previewVoxels.map((v, i) => (
@@ -234,16 +304,23 @@ const VoxelModel: React.FC<VoxelModelProps> = ({
               isPreview
             />
           ))}
+          
+          {/* Render Placement Ghost Guide */}
+          {placementPos && (currentTool === 'PENCIL' || currentTool === 'DUPLICATE') && !previewVoxels.length && (
+            <PlacementGhost 
+              position={placementPos} 
+              color={ghostColor}
+            />
+          )}
         </group>
       </Bounds>
 
       <InteractiveGrid 
         onAdd={(pos) => onAddVoxel(pos)} 
-        onHover={(pos) => onHoverCoord?.(pos)}
+        onHover={handleHoverUpdate}
         gridSize={gridSize} 
       />
       
-      {/* 3D Coordinate Indicator (Gizmo) in Bottom-Left */}
       <GizmoHelper
         alignment="bottom-left"
         margin={[80, 80]} 
@@ -254,7 +331,6 @@ const VoxelModel: React.FC<VoxelModelProps> = ({
         />
       </GizmoHelper>
 
-      {/* Robust Camera Controls */}
       <OrbitControls 
         makeDefault 
         enableDamping={true} 

@@ -305,7 +305,7 @@ const App: React.FC = () => {
           </div>
           <div className="grid grid-cols-2 gap-2">
             <RetroButton onClick={handleSave} className="w-full"><Save size={16} /> {t.ui.save}</RetroButton>
-            <RetroButton onClick={handleLoad} className="w-full"><FolderOpen size={16} /> {t.ui.load}</RetroButton>
+            <RetroButton onClick={handleLoad} className="w-full"><FolderOpen size={16} /> {t.ui.load}</FolderOpen>
           </div>
           <RetroButton className="w-full"><Download size={16} /> {t.ui.export}</RetroButton>
         </div>
@@ -403,6 +403,7 @@ const App: React.FC = () => {
           onUpdateVoxelColor={updateVoxelColor}
           onPickColor={handlePickColor}
           onHoverCoord={setHoveredCoord}
+          hoveredCoord={hoveredCoord}
           currentTool={currentTool}
           currentColor={currentColor}
           gridSize={gridSize}
